@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebカメラQR受付</title>
+
+    <style>
+        /* 全体の設定 */
+        body {
+            width: 100%;
+            margin: 0;
+            padding: 10px;
+            box-sizing: border-box;
+            text-align: center;
+            background-color: #f9f9f9;
+            font-family: sans-serif;
+        }
+
+        /* ▼ カメラ表示部の設定 ▼ */
+        #reader {
+            width: 100%;
+            max-width: 400px;
+            height: auto;
+            max-height: 45vh;
+            margin: 0 auto;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            overflow: hidden;
+            background-color: #000;
+        }
+
+        /* 結果表示エリアの外枠 */
+        #result {
+            margin-top: 10px;       
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px; 
+            background-color: #fff;
+            min-height: 100px;
+            text-align: center;
+            max-height: 40vh;
+            overflow-y: auto;
+        }
+
+        .result-item {
+            margin-bottom: 10px;
+            padding: 10px 5px;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        /* 成功/エラーの背景色 */
+        .result-item.success { background-color: #e9f7ef; border: 2px solid #28a745; }
+        .result-item.error { background-color: #f8d7da; border: 2px solid #dc3545; }
+
+        /* ▼ 判定結果の文字設定 ▼ */
+        .code-type {
+            font-weight: bold;
+            display: block;
+            width: 100%;
+            margin: 0 auto;
+            font-size: 24px;
+            line-height: 1.4;
+        }
+        .result-item.success .code-type { color: #008000; }
+        .result-item.error .code-type { color: #d8000c; }
+        .code-data { font-size: 18px; color: #555; word-break: break-all; margin-top: 5px; }
+        .timestamp { font-size: 12px; color: #888; margin-top: 5px; }
+
+        /* ▼ ボタンエリア ▼ */
+        #controls { margin: 10px 0; }
+        button {
+            color: white; border: none; padding: 10px 20px; border-radius: 5px;
+            cursor: pointer; margin: 0 5px; font-size: 16px; transition: background-color 0.2s;
+        }
+        button:disabled { background-color: #ccc !important; cursor: not-allowed; }
+        #start-btn { background-color: #28a745; }
+        #start-btn:hover:not(:disabled) { background-color: #218838; }
+        #stop-btn { background-color: #dc3545; }
+        #stop-btn:hover:not(:disabled) { background-color: #c82333; }
+        #clear-btn { background-color: #6c757d; }
+        #clear-btn:hover { background-color: #5a6268; }
+
+        /* フラッシュアニメーション */
+        @keyframes flash-green {
+            0% { box-shadow: inset 0 0 0 50px #00FF00; }
+            50% { box-shadow: inset 0 0 0 50px #00FF00; }
+            100% { box-shadow: inset 0 0 0 0px transparent; }
+        }
+        .scan-flash { animation: flash-green 0.5s ease-out; }
+    </style>
+</head>
+<body>
+
+    <div id="reader"></div>
+
+    <div id="controls">
+        <button id="start-btn">スタート</button>
+        <button id="stop-btn" disabled>ストップ</button>
+        <button id="clear-btn">クリア</button>
+    </div>
+
+    <div id="result">
+        <h2>スキャン結果</h2>
+        <div id="result-list"></div>
+    </div>
+
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    
+    <script>
+        // ★★★ここにGASでコピーしたウェブアプリのURLを貼り付けます★★★
+        const GAS_URL = "ここにGASのウェブアプリURLを貼り付ける";
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const html5QrCode = new Html5Qrcode("reader");
+            let scanning = false;
+            let isCooldown = false; 
+            
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const clearBtn = document.getElementById('clear-btn');
+            const resultList = document.getElementById('result-list');
+            
+            const context = new (window.AudioContext || window.webkitAudioContext)();
+            
+            function playBeepSound(frequency, duration, type = 'sine') {
+                if (context.state === 'suspended') { context.resume(); }
+                const oscillator = context.createOscillator();
+                const gainNode = context.createGain();
+                oscillator.connect(gainNode);
+                gainNode.connect(context.destination);
+                oscillator.type = type; 
+                oscillator.frequency.value = frequency; 
+                gainNode.gain.value = 1.0; 
+                oscillator.start();
+                oscillator.stop(context.currentTime + duration);
+            }
+            
+            function playScanBeep() { playBeepSound(1200, 0.30); }
+
+            function playSuccessSound() {
+                if (context.state === 'suspended') { context.resume(); }
+                const now = context.currentTime;
+                const volume = 0.5;
+
+                const osc1 = context.createOscillator();
+                const gain1 = context.createGain();
+                osc1.type = 'sine'; osc1.frequency.value = 660; 
+                osc1.connect(gain1); gain1.connect(context.destination);
+                gain1.gain.setValueAtTime(0, now);
+                gain1.gain.linearRampToValueAtTime(volume, now + 0.01);
+                gain1.gain.exponentialRampToValueAtTime(0.01, now + 1.0); 
+                osc1.start(now); osc1.stop(now + 1.0);
+
+                const osc2 = context.createOscillator();
+                const gain2 = context.createGain();
+                osc2.type = 'sine'; osc2.frequency.value = 523; 
+                osc2.connect(gain2); gain2.connect(context.destination);
+                gain2.gain.setValueAtTime(0, now + 0.4);
+                gain2.gain.linearRampToValueAtTime(volume, now + 0.41);
+                gain2.gain.exponentialRampToValueAtTime(0.01, now + 2.0); 
+                osc2.start(now + 0.4); osc2.stop(now + 2.0);
+            }
+
+            function playErrorSound() {
+                playBeepSound(300, 0.2, 'square');
+                setTimeout(() => { playBeepSound(300, 0.2, 'square'); }, 250);
+            }
+
+            function addResultItem(codeType, codeData, status, message) {
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString();
+                const resultItem = document.createElement('div');
+                resultItem.className = `result-item ${status}`; 
+                resultItem.innerHTML = `
+                    <div class="code-type">${message}</div>
+                    <div class="code-data">${codeData}</div>
+                    <div class="timestamp">${timeStr}</div>
+                `;
+                resultList.insertBefore(resultItem, resultList.firstChild);
+            }
+
+            startBtn.addEventListener('click', function() {
+                if (scanning) return;
+                
+                const qrCodeSuccessCallback = (decodedText, decodedResult) => {
+                    if (isCooldown) return;
+                    isCooldown = true;
+                    
+                    const readerDiv = document.getElementById("reader");
+                    readerDiv.classList.remove("scan-flash");
+                    void readerDiv.offsetWidth;
+                    readerDiv.classList.add("scan-flash");
+
+                    playScanBeep();
+
+                    // ★ google.script.run の代わりに fetch通信 を使います
+                    const fetchUrl = `${GAS_URL}?action=check&qrData=${encodeURIComponent(decodedText)}`;
+                    
+                    fetch(fetchUrl)
+                        .then(response => response.json())
+                        .then(response => {
+                            const { status, message, name, count } = response;
+                            
+                            if (status === "SUCCESS") {
+                                playSuccessSound(); 
+                                let displayMessage = `✅ 受付完了<br>${name}様 (${count}名)`;
+                                addResultItem("QR_CODE", decodedText, 'success', displayMessage);
+                                
+                                // 裏側でスプレッドシートへの記録を投げる
+                                const logUrl = `${GAS_URL}?action=log&qrData=${encodeURIComponent(decodedText)}&name=${encodeURIComponent(name)}&source=Web`;
+                                fetch(logUrl, { mode: 'no-cors' }); // 記録の完了は待たない
+
+                            } else if (status === "ALREADY") {
+                                playErrorSound(); 
+                                let displayMessage = `⚠️ ${message}<br>${name || ''}様`;
+                                addResultItem("QR_CODE", decodedText, 'error', displayMessage);
+                            } else {
+                                playErrorSound(); 
+                                addResultItem("QR_CODE", decodedText, 'error', `❌ ${message}`);
+                            }
+                        })
+                        .catch(error => {
+                            playErrorSound();
+                            addResultItem("ERROR", decodedText, 'error', `❌ 通信失敗: ${error.message}`);
+                        });
+
+                    // 2秒後に再びスキャン可能にする
+                    setTimeout(() => {
+                        isCooldown = false;
+                        readerDiv.classList.remove("scan-flash");
+                    }, 2000); 
+                };
+
+                const config = { 
+                    fps: 20, 
+                    qrbox: { width: 250, height: 250 },
+                    formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ]
+                };
+                
+                html5QrCode.start(
+                    { facingMode: "environment" }, 
+                    config,
+                    qrCodeSuccessCallback,
+                    (errorMessage) => { /* ignore errors */ }
+                ).then(() => {
+                    scanning = true;
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                }).catch(err => {
+                    alert("カメラ起動エラー: " + err);
+                });
+            });
+            
+            stopBtn.addEventListener('click', function() {
+                if (!scanning) return;
+                html5QrCode.stop().then(() => {
+                    scanning = false;
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                }).catch(err => console.error(err));
+            });
+            
+            clearBtn.addEventListener('click', function() { resultList.innerHTML = ''; });
+            
+            window.addEventListener('beforeunload', () => {
+                if (html5QrCode.getState() === Html5QrcodeScannerState.SCANNING) {
+                    html5QrCode.stop();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
